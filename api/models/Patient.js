@@ -138,13 +138,21 @@ const Patient = {
     // Traduce el grade del modelo de IA a un estado legible para el paciente.
     async updateHealthStatusFromAI(patientId, aiGrade) {
         const gradeMap = {
-            'No_DR': 'Normal',
-            'Mild': 'Leve',
-            'Moderate': 'Moderado',
-            'Severe': 'Severo',
-            'Proliferate_DR': 'Severo',
+            'no_dr': 'Normal',
+            'no dr': 'Normal',
+            'normal': 'Normal',
+            'mild': 'Leve',
+            'moderate': 'Moderado',
+            'severe': 'Severo',
+            'proliferate_dr': 'Severo',
+            'proliferative dr': 'Severo',
         };
-        const healthStatus = gradeMap[aiGrade] || 'Normal';
+        const normalizedGrade = typeof aiGrade === 'string' ? aiGrade.trim().toLowerCase() : '';
+        const healthStatus = gradeMap[normalizedGrade];
+        if (!healthStatus) {
+            console.warn(`[Patient] Grado de IA no reconocido: "${aiGrade}". Se omite actualización de health_status.`);
+            return null;
+        }
         const result = await pool.query(
             `UPDATE patients SET health_status = $1, updated_at = NOW() WHERE id = $2 RETURNING *`,
             [healthStatus, patientId]
