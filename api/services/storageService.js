@@ -8,10 +8,13 @@ const {
 } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
-const endpoint = process.env.S3_ENDPOINT || 'http://minio:9000';
-const publicEndpoint = process.env.S3_PUBLIC_ENDPOINT || process.env.APP_URL || 'http://localhost:9000';
-const region = process.env.S3_REGION || 'us-east-1';
-const bucketName = process.env.S3_BUCKET || 'retina-images';
+const endpoint = (process.env.S3_ENDPOINT || 'http://minio:9000').trim().replace(/\/$/, '');
+const publicEndpoint = (process.env.S3_PUBLIC_ENDPOINT || process.env.APP_URL || 'http://localhost:9000').trim().replace(/\/$/, '');
+
+// Cloudflare R2 requiere region 'auto' para firmar peticiones S3 (SigV4) correctamente
+const isR2 = endpoint.includes('r2.cloudflarestorage.com') || (process.env.S3_PUBLIC_ENDPOINT || '').includes('r2.dev');
+const region = isR2 ? 'auto' : (process.env.S3_REGION || 'us-east-1');
+const bucketName = (process.env.S3_BUCKET || 'retina-images').trim();
 
 // En producción, las credenciales S3 son obligatorias
 if (process.env.NODE_ENV === 'production') {
@@ -19,15 +22,20 @@ if (process.env.NODE_ENV === 'production') {
         throw new Error('S3_ACCESS_KEY and S3_SECRET_KEY are required in production');
     }
 }
-const accessKeyId = process.env.S3_ACCESS_KEY || 'retiscan';
-const secretAccessKey = process.env.S3_SECRET_KEY || 'retiscan123';
+const accessKeyId = (process.env.S3_ACCESS_KEY || 'retiscan').replace(/['"]/g, '').trim();
+const secretAccessKey = (process.env.S3_SECRET_KEY || 'retiscan123').replace(/['"]/g, '').trim();
 
-// Cliente interno: apunta a MinIO dentro de la red de Docker.
+// Cliente interno: apunta a Cloudflare R2 / MinIO dentro de la red.
 const s3Client = new S3Client({
     endpoint,
     region,
     credentials: { accessKeyId, secretAccessKey },
-    forcePathStyle: true
+    ...(isR2 ? {
+        requestChecksumCalculation: "WHEN_REQUIRED",
+        responseChecksumValidation: "WHEN_REQUIRED"
+    } : {
+        forcePathStyle: true
+    })
 });
 
 // Cliente público: lo usamos para firmar URLs que ve el navegador.
@@ -35,7 +43,12 @@ const s3PublicClient = new S3Client({
     endpoint: publicEndpoint,
     region,
     credentials: { accessKeyId, secretAccessKey },
-    forcePathStyle: true
+    ...(isR2 ? {
+        requestChecksumCalculation: "WHEN_REQUIRED",
+        responseChecksumValidation: "WHEN_REQUIRED"
+    } : {
+        forcePathStyle: true
+    })
 });
 
 let bucketInitialized = false;
@@ -50,12 +63,14 @@ async function ensureBucketExists() {
         if (err.name === 'NotFound' || err.$metadata?.httpStatusCode === 404) {
             try {
                 await s3Client.send(new CreateBucketCommand({ Bucket: bucketName }));
-                bucketInitialized = true;
                 console.log(`[Storage] Bucket '${bucketName}' creado.`);
             } catch (createErr) {
                 console.error(`[Storage] Error creando bucket:`, createErr.message);
             }
+        } else {
+            console.warn(`[Storage] No se pudo verificar bucket '${bucketName}' (${err.message}). Continuando con operaciones S3.`);
         }
+        bucketInitialized = true;
     }
 }
 
@@ -69,11 +84,17 @@ const storageService = {
         await ensureBucketExists();
         const key = filename.startsWith('retina-') ? filename : `retina-${filename}`;
 
+        // Determinar el ContentType real de la imagen (evitar application/octet-stream que fuerza descarga/bloqueo)
+        let finalMime = mimeType;
+        if (!finalMime || finalMime === 'application/octet-stream' || !finalMime.startsWith('image/')) {
+            finalMime = key.endsWith('.png') ? 'image/png' : 'image/jpeg';
+        }
+
         const command = new PutObjectCommand({
             Bucket: bucketName,
             Key: key,
             Body: buffer,
-            ContentType: mimeType
+            ContentType: finalMime
         });
 
         await s3Client.send(command);
@@ -93,7 +114,8 @@ const storageService = {
         return response.Body;
     },
 
-    // URL firmada (1 hora por defecto) para mostrar la imagen en el navegador.
+    // URL firmada temporalmente para mostrar la imagen en el navegador.
+    // Funciona con R2 y MinIO — la firma permite acceso sin que el bucket sea público.
     async getPresignedUrl(key, expiresInSeconds = 3600) {
         if (!key) return null;
         if (key.startsWith('http')) return key;
@@ -105,7 +127,8 @@ const storageService = {
             Key: key
         });
 
-        return getSignedUrl(s3PublicClient, command, { expiresIn: expiresInSeconds });
+        // Usamos el cliente principal (no el público) para generar URLs firmadas
+        return getSignedUrl(s3Client, command, { expiresIn: expiresInSeconds });
     },
 
     async deleteImage(key) {
