@@ -7,13 +7,26 @@ const { v4: uuidv4 } = require('uuid');
 const crypto = require('crypto');
 const path = require('path');
 
-function signImageUrl(analysisId, expiresInSeconds = 3600) {
+function getPublicApiOrigin(req) {
+    if (req) {
+        const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'https')
+            .toString()
+            .split(',')[0]
+            .trim();
+        const host = req.headers['x-forwarded-host'] || req.get('host');
+        if (host) return `${proto}://${host}`;
+    }
+    return (env.API_URL || '').trim().replace(/\/+$/, '');
+}
+
+function signImageUrl(analysisId, req, expiresInSeconds = 3600) {
     const exp = Math.floor(Date.now() / 1000) + expiresInSeconds;
     const sig = crypto
         .createHmac('sha256', `${env.JWT_SECRET}_img`)
         .update(`${analysisId}:${exp}`)
         .digest('hex');
-    return `/api/analyses/${analysisId}/image?exp=${exp}&sig=${sig}`;
+    const origin = getPublicApiOrigin(req);
+    return `${origin}/api/analyses/${analysisId}/image?exp=${exp}&sig=${sig}`;
 }
 
 function verifyImageSignature(analysisId, exp, sig) {
@@ -32,9 +45,9 @@ function verifyImageSignature(analysisId, exp, sig) {
     return crypto.timingSafeEqual(sigBuf, expectedBuf);
 }
 
-// Devuelve una URL firmada hacia el proxy de esta API para evitar bloqueos CORS
-// en Flutter Web (R2 sin CORS) y hosts internos no resolubles (minio:9000).
-async function formatAnalysisWithPresignedUrl(analysis) {
+// Devuelve una URL absoluta firmada hacia el proxy de esta API para evitar
+// bloqueos CORS en Flutter Web (R2 sin CORS) y hosts internos (minio:9000).
+async function formatAnalysisWithPresignedUrl(analysis, req) {
     if (!analysis) return null;
     const formatted = { ...analysis };
     if (
@@ -42,7 +55,7 @@ async function formatAnalysisWithPresignedUrl(analysis) {
         !formatted.image_uri.startsWith('http') &&
         !formatted.image_uri.startsWith('retiscan://')
     ) {
-        formatted.image_uri = signImageUrl(formatted.id);
+        formatted.image_uri = signImageUrl(formatted.id, req);
     }
     return formatted;
 }
@@ -83,7 +96,7 @@ const analysisController = {
                 doctorNotes,
             });
 
-            const responseAnalysis = await formatAnalysisWithPresignedUrl(analysis);
+            const responseAnalysis = await formatAnalysisWithPresignedUrl(analysis, req);
 
             return res.status(202).json({
                 message: 'Análisis en cola — el procesamiento de IA ha comenzado en segundo plano',
@@ -102,7 +115,7 @@ const analysisController = {
                 req.params.patientId,
                 req.user.id
             );
-            const formattedAnalyses = await Promise.all(analyses.map(formatAnalysisWithPresignedUrl));
+            const formattedAnalyses = await Promise.all(analyses.map(a => formatAnalysisWithPresignedUrl(a, req)));
             return res.status(200).json({ count: formattedAnalyses.length, analyses: formattedAnalyses });
         } catch (err) {
             next(err);
@@ -114,7 +127,7 @@ const analysisController = {
     async getMyAnalyses(req, res, next) {
         try {
             const analyses = await analysisService.getByPatientUserId(req.user.id);
-            const formattedAnalyses = await Promise.all(analyses.map(formatAnalysisWithPresignedUrl));
+            const formattedAnalyses = await Promise.all(analyses.map(a => formatAnalysisWithPresignedUrl(a, req)));
             return res.status(200).json({ count: formattedAnalyses.length, analyses: formattedAnalyses });
         } catch (err) {
             next(err);
@@ -143,7 +156,7 @@ const analysisController = {
                 }
             }
 
-            const formattedAnalysis = await formatAnalysisWithPresignedUrl(analysis);
+            const formattedAnalysis = await formatAnalysisWithPresignedUrl(analysis, req);
             return res.status(200).json({ analysis: formattedAnalysis });
         } catch (err) {
             next(err);
@@ -234,7 +247,7 @@ const analysisController = {
         try {
             const { notes } = req.body;
             const updated = await analysisService.updateNotes(req.params.id, req.user.id, notes);
-            const formatted = await formatAnalysisWithPresignedUrl(updated);
+            const formatted = await formatAnalysisWithPresignedUrl(updated, req);
             return res.status(200).json({ message: 'Notas actualizadas', analysis: formatted });
         } catch (err) {
             next(err);
