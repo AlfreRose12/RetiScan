@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -28,6 +29,7 @@ class CaptureScreen extends StatefulWidget {
 class _CaptureScreenState extends State<CaptureScreen>
     with TickerProviderStateMixin {
   XFile? _selectedImageFile;
+  Uint8List? _selectedImageBytes;
   bool _isUploading = false;
   bool _isSaving = false;
   bool _analysisComplete = false;
@@ -283,8 +285,11 @@ class _CaptureScreenState extends State<CaptureScreen>
     final pickedFile = await picker.pickImage(source: source);
 
     if (pickedFile != null) {
+      final imageBytes = await pickedFile.readAsBytes();
+      if (!mounted) return;
       setState(() {
         _selectedImageFile = pickedFile;
+        _selectedImageBytes = imageBytes;
         _isUploading = true;
         _analysisComplete = false;
         _currentProgress = 0.0;
@@ -436,6 +441,7 @@ class _CaptureScreenState extends State<CaptureScreen>
   void _resetAnalysis() {
     setState(() {
       _selectedImageFile = null;
+      _selectedImageBytes = null;
       _analysisComplete = false;
       _displayResults = null;
       _analysisResult = null;
@@ -896,6 +902,7 @@ class _CaptureScreenState extends State<CaptureScreen>
                     Container(
                       width: 220,
                       height: 220,
+                      clipBehavior: Clip.antiAlias,
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(20),
                         color: Theme.of(context).brightness == Brightness.dark
@@ -908,25 +915,33 @@ class _CaptureScreenState extends State<CaptureScreen>
                             offset: Offset(0, 10),
                           ),
                         ],
-                        image: (_analysisResult?.imageUri != null)
-                            ? DecorationImage(
-                                image: NetworkImage(
-                                  ApiConfig.imageUrl(_analysisResult!.imageUri),
-                                ),
-                                fit: BoxFit.contain,
-                                filterQuality: FilterQuality.high,
-                              )
-                            : null,
                       ),
-                      child: (_analysisResult?.imageUri == null)
-                          ? Center(
-                              child: Icon(
-                                Icons.image,
-                                size: 60,
-                                color: Theme.of(context).textTheme.bodyMedium?.color?.withOpacity(0.3),
-                              ),
+                      child: _selectedImageBytes != null
+                          ? Image.memory(
+                              _selectedImageBytes!,
+                              fit: BoxFit.contain,
+                              filterQuality: FilterQuality.high,
                             )
-                          : null,
+                          : (_analysisResult?.imageUri != null
+                              ? Image.network(
+                                  ApiConfig.imageUrl(_analysisResult!.imageUri),
+                                  fit: BoxFit.contain,
+                                  filterQuality: FilterQuality.high,
+                                  errorBuilder: (context, error, stackTrace) => Center(
+                                    child: Icon(
+                                      Icons.broken_image,
+                                      size: 60,
+                                      color: Theme.of(context).textTheme.bodyMedium?.color?.withOpacity(0.3),
+                                    ),
+                                  ),
+                                )
+                              : Center(
+                                  child: Icon(
+                                    Icons.image,
+                                    size: 60,
+                                    color: Theme.of(context).textTheme.bodyMedium?.color?.withOpacity(0.3),
+                                  ),
+                                )),
                     ),
                     SizedBox(height: 20),
                     _buildGradeBadge(_analysisResult!.aiResult?['grade'] ?? 'Normal'),

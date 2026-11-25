@@ -151,6 +151,10 @@ router.get('/:id',
  *       200:
  *         description: Logs de procesamiento
  */
+router.get('/:id/image',
+    analysisController.getAnalysisImage
+);
+
 router.get('/:id/logs',
     authMiddleware,
     requireRole('MEDICO'),
