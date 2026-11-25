@@ -46,7 +46,7 @@ class ApiConfig {
       return uri;
     }
     final path = uri.startsWith('/') ? uri : '/$uri';
-    return '${baseUrl.replaceAll('/api', '')}$path';
+    return '${baseUrl.replaceFirst(RegExp(r'/api$'), '')}$path';
   }
 
   // Headers para requests autenticados (usado internamente o legacy)
