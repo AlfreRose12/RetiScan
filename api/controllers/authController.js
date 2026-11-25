@@ -6,6 +6,16 @@ const emailService = require('../services/emailService');
 const pool = require('../config/database');
 const bcrypt = require('bcryptjs');
 
+const getRefreshCookieOptions = (maxAgeDays) => {
+    const isProd = process.env.NODE_ENV === 'production';
+    return {
+        httpOnly: true,
+        secure: isProd,
+        sameSite: isProd ? 'none' : 'lax',
+        ...(maxAgeDays ? { maxAge: maxAgeDays * 24 * 60 * 60 * 1000 } : {}),
+    };
+};
+
 const authController = {
     // POST /api/auth/login
     // Login unificado: acepta email (médicos) o username (pacientes).
@@ -34,12 +44,7 @@ const authController = {
                 const { refreshToken, token, user: userData } = await authService.generateTokensForUser(user, profileEmail, profileName);
 
                 const maxAgeDays = parseInt(process.env.REFRESH_TOKEN_EXPIRES_DAYS) || 7;
-                res.cookie('refreshToken', refreshToken, {
-                    httpOnly: true,
-                    secure: process.env.NODE_ENV === 'production',
-                    sameSite: 'lax',
-                    maxAge: maxAgeDays * 24 * 60 * 60 * 1000
-                });
+                res.cookie('refreshToken', refreshToken, getRefreshCookieOptions(maxAgeDays));
 
                 return res.status(200).json({ message: 'Inicio de sesión exitoso', token, user: userData });
             }
@@ -52,12 +57,7 @@ const authController = {
                     const { refreshToken, token, user: userData } = await authService.generateTokensForUser(user, profileEmail, profileName);
 
                     const maxAgeDays = parseInt(process.env.REFRESH_TOKEN_EXPIRES_DAYS) || 7;
-                    res.cookie('refreshToken', refreshToken, {
-                        httpOnly: true,
-                        secure: process.env.NODE_ENV === 'production',
-                        sameSite: 'lax',
-                        maxAge: maxAgeDays * 24 * 60 * 60 * 1000
-                    });
+                    res.cookie('refreshToken', refreshToken, getRefreshCookieOptions(maxAgeDays));
 
                     return res.status(200).json({ message: 'Inicio de sesión exitoso', token, user: userData, trustedDevice: true });
                 }
@@ -117,12 +117,7 @@ const authController = {
 
             // Configurar Cookie HttpOnly
             const maxAgeDays = parseInt(process.env.REFRESH_TOKEN_EXPIRES_DAYS) || 7;
-            res.cookie('refreshToken', refreshToken, {
-                httpOnly: true,
-                secure: process.env.NODE_ENV === 'production',
-                sameSite: 'lax',
-                maxAge: maxAgeDays * 24 * 60 * 60 * 1000
-            });
+            res.cookie('refreshToken', refreshToken, getRefreshCookieOptions(maxAgeDays));
 
             // Generar Trust Token si el usuario marcó "Recordar dispositivo"
             const response = { message: 'Inicio de sesión exitoso', token, user: userData };
@@ -182,7 +177,7 @@ const authController = {
             if (refreshToken) {
                 await pool.query('UPDATE refresh_tokens SET revoked = TRUE WHERE token = $1', [refreshToken]);
             }
-            res.clearCookie('refreshToken');
+            res.clearCookie('refreshToken', getRefreshCookieOptions());
 
             return res.status(200).json({ message: 'Sesión cerrada exitosamente' });
         } catch (err) {

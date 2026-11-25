@@ -11,6 +11,7 @@ const routes = require('./routes');
 const errorMiddleware = require('./middlewares/errorMiddleware');
 
 const app = express();
+app.set('trust proxy', 1);
 const PORT = env.PORT;
 
 // ── CORS: whitelist de dominios permitidos ──────────────────

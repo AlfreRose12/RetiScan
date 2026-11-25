@@ -10,10 +10,18 @@ import '../services/auth_service.dart';
 import 'dart:html' as html;
 
 class ApiConfig {
-  /// Construye la URL base de la API a partir del hostname actual.
-  /// En producción (HTTPS en subdominios): https://api.retiscan.com/api
-  /// En desarrollo (puerto local): http://localhost:3000/api
+  /// URL opcional inyectada en tiempo de compilación:
+  /// flutter build web --release --dart-define=API_URL=https://mi-api.up.railway.app
+  static const String _envApiUrl = String.fromEnvironment('API_URL', defaultValue: '');
+
+  /// Construye la URL base de la API a partir de API_URL (si se definió en build)
+  /// o del hostname actual.
   static String get baseUrl {
+    final configured = _envApiUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    if (configured.isNotEmpty) {
+      return configured.endsWith('/api') ? configured : '$configured/api';
+    }
+
     final host = html.window.location.hostname ?? 'localhost';
     final protocol = html.window.location.protocol; // 'https:' o 'http:'
 
@@ -22,12 +30,12 @@ class ApiConfig {
       return 'http://$host:3000/api';
     }
 
-    // Si estamos desplegando en Railway
+    // Si estamos desplegando en Railway sin API_URL configurada
     if (host.contains('railway.app')) {
       return 'https://retiscan-production.up.railway.app/api';
     }
 
-    // Dominio personalizado de producción (ej: app.retiscan.com -> api.retiscan.com)
+    // Dominio personalizado de producción (ej: app.retiscan.online -> api.retiscan.online)
     final apiHost = host.replaceAll('app.', 'api.');
     return 'https://$apiHost/api';
   }
