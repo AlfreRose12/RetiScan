@@ -103,6 +103,12 @@ const storageService = {
 
     // Regresa la imagen como stream para reenviarla al servicio de IA.
     async getImageStream(key) {
+        const { body } = await this.getImageObject(key);
+        return body;
+    },
+
+    // Regresa el stream y metadatos (Content-Type / Content-Length) para proxy HTTP.
+    async getImageObject(key) {
         await ensureBucketExists();
 
         const command = new GetObjectCommand({
@@ -111,7 +117,11 @@ const storageService = {
         });
 
         const response = await s3Client.send(command);
-        return response.Body;
+        return {
+            body: response.Body,
+            contentType: response.ContentType,
+            contentLength: response.ContentLength
+        };
     },
 
     // URL firmada temporalmente para mostrar la imagen en el navegador.

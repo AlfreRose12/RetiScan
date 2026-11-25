@@ -1,16 +1,48 @@
 const analysisService = require('../services/analysisService');
 const storageService = require('../services/storageService');
+const Analysis = require('../models/Analysis');
 const Patient = require('../models/Patient');
+const env = require('../config/env');
 const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
 const path = require('path');
 
-// Convierte la URI interna de la imagen a una URL firmada temporalmente.
-// Así el frontend puede mostrar la retinografía sin exponer el bucket.
+function signImageUrl(analysisId, expiresInSeconds = 3600) {
+    const exp = Math.floor(Date.now() / 1000) + expiresInSeconds;
+    const sig = crypto
+        .createHmac('sha256', `${env.JWT_SECRET}_img`)
+        .update(`${analysisId}:${exp}`)
+        .digest('hex');
+    return `/api/analyses/${analysisId}/image?exp=${exp}&sig=${sig}`;
+}
+
+function verifyImageSignature(analysisId, exp, sig) {
+    if (!exp || !sig || typeof sig !== 'string') return false;
+    const expNum = Number(exp);
+    if (!Number.isInteger(expNum) || Math.floor(Date.now() / 1000) > expNum) {
+        return false;
+    }
+    const expected = crypto
+        .createHmac('sha256', `${env.JWT_SECRET}_img`)
+        .update(`${analysisId}:${expNum}`)
+        .digest('hex');
+    const sigBuf = Buffer.from(sig, 'utf8');
+    const expectedBuf = Buffer.from(expected, 'utf8');
+    if (sigBuf.length !== expectedBuf.length) return false;
+    return crypto.timingSafeEqual(sigBuf, expectedBuf);
+}
+
+// Devuelve una URL firmada hacia el proxy de esta API para evitar bloqueos CORS
+// en Flutter Web (R2 sin CORS) y hosts internos no resolubles (minio:9000).
 async function formatAnalysisWithPresignedUrl(analysis) {
     if (!analysis) return null;
     const formatted = { ...analysis };
-    if (formatted.image_uri) {
-        formatted.image_uri = await storageService.getPresignedUrl(formatted.image_uri);
+    if (
+        formatted.image_uri &&
+        !formatted.image_uri.startsWith('http') &&
+        !formatted.image_uri.startsWith('retiscan://')
+    ) {
+        formatted.image_uri = signImageUrl(formatted.id);
     }
     return formatted;
 }
@@ -140,13 +172,70 @@ const analysisController = {
         }
     },
 
+    // GET /api/analyses/:id/image?exp=...&sig=...
+    // Sirve la retinografía desde R2/MinIO con firma temporal HMAC y headers CORS.
+    async getAnalysisImage(req, res, next) {
+        try {
+            const { id } = req.params;
+            const { exp, sig } = req.query;
+
+            if (!verifyImageSignature(id, exp, sig)) {
+                return res.status(403).json({ error: 'Enlace de imagen inválido o expirado' });
+            }
+
+            const analysis = await Analysis.findById(id);
+            if (!analysis || !analysis.image_uri || analysis.image_uri.startsWith('retiscan://')) {
+                return res.status(404).json({ error: 'Imagen no encontrada' });
+            }
+
+            if (analysis.image_uri.startsWith('http')) {
+                return res.redirect(analysis.image_uri);
+            }
+
+            const { body, contentType, contentLength } = await storageService.getImageObject(analysis.image_uri);
+
+            let finalContentType = contentType;
+            if (!finalContentType || finalContentType === 'application/octet-stream' || !finalContentType.startsWith('image/')) {
+                finalContentType = analysis.image_uri.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg';
+            }
+
+            res.setHeader('Content-Type', finalContentType);
+            if (contentLength) {
+                res.setHeader('Content-Length', contentLength);
+            }
+            res.setHeader('Cache-Control', 'private, max-age=3600');
+            res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+
+            if (typeof body.pipe === 'function') {
+                body.on('error', (streamErr) => {
+                    console.error(`[AnalysisImage] Error en stream de ${id}:`, streamErr.message);
+                    if (!res.headersSent) {
+                        res.status(502).json({ error: 'Error al leer la imagen desde almacenamiento' });
+                    } else {
+                        res.end();
+                    }
+                });
+                return body.pipe(res);
+            }
+
+            const bytes = await body.transformToByteArray();
+            return res.send(Buffer.from(bytes));
+        } catch (err) {
+            if (err.name === 'NoSuchKey' || err.$metadata?.httpStatusCode === 404) {
+                return res.status(404).json({ error: 'Imagen no encontrada en almacenamiento' });
+            }
+            next(err);
+        }
+    },
+
     // PUT /api/analyses/:id/notes
     // Actualiza las notas médicas de un análisis.
     async updateAnalysisNotes(req, res, next) {
         try {
             const { notes } = req.body;
             const updated = await analysisService.updateNotes(req.params.id, req.user.id, notes);
-            return res.status(200).json({ message: 'Notas actualizadas', analysis: updated });
+            const formatted = await formatAnalysisWithPresignedUrl(updated);
+            return res.status(200).json({ message: 'Notas actualizadas', analysis: formatted });
         } catch (err) {
             next(err);
         }
